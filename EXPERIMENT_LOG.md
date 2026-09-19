@@ -2114,3 +2114,22 @@ Offline probe of every knowledge-update miss against its own cached KG:
 - **Next:** wire D+gate behind `RETRIEVAL_MODE=jev_cascade`; rebuild LoCoMo KGs
   with session dates then re-test temporal; exempt open-domain/inferential
   questions from the gate via a Jev intent Choice; batch-API ingestion mode.
+
+## EXP-JEV-3: jev_cascade + fact evidence (+ abstain gate) on cached LongMemEval KGs  (2026-09-19, PRE-REGISTRATION)
+- **Hypothesis:** the QA-side misses on LongMemEval are retrieval-recall and
+  evidence-detail bound (EXP-JEV-1/2): a wide shortlist scored per-fact by Jev,
+  rendered with source sentences, lifts KU / multi-session / temporal without
+  re-ingestion.
+- **Setup:** gpu02 worktree `~/AGM-jev`; the 48 cached `lme_breadth_*` KGs are
+  COPIED to `evaluation/results/jev_lme/<ability>__<config>` and re-asked
+  (`scripts/jev/lme_requery.py`). gpu02's GPUs are held by a root-owned
+  gemma-4-31B vLLM (not ours, untouched), so Qwen3 cannot be served: answerer =
+  Fireworks nemotron-lightning-30b (`LLM_REASONING_EFFORT=none`), judge =
+  Fireworks gpt-oss-120b, Jev via Vercel AI Gateway. Old Qwen3 numbers are NOT
+  comparable → config `base` (hybrid) is re-run the same way as the baseline.
+- **Configs:** base | evidence | cascade | cascade_gate (one flag at a time).
+- **Bars (judge accuracy, dev n=8 per ability):** KU ≥ base+2 questions;
+  multi-session ≥ base+1 (full fix needs the intent router, EXP-JEV-4);
+  temporal, ss-user, ss-assistant, preference: no regression > 1 question.
+  Gate: no correct answer lost to abstention.
+- STATUS: RUNNING.
