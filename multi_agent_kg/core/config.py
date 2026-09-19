@@ -233,6 +233,16 @@ class RetrievalConfig:
     seed_weight_triple: float = 1.0  # fusion weight for triple-collection seeds
     seed_weight_entity: float = 1.0  # fusion weight for entity-collection seeds
 
+    # jev_cascade (EXP-JEV-3): dense top-``jev_pool`` ∪ lexical top-``jev_lexical_k``
+    # → one Jev Noul per fact → top-``jev_top_k``. ``jev_abstain_tau`` is the
+    # abstain-gate threshold on the best per-fact relevance (QA_ABSTAIN_GATE=jev).
+    jev_pool: int = 200
+    jev_lexical_k: int = 20
+    jev_top_k: int = 15
+    jev_abstain_tau: float = field(
+        default_factory=lambda: float(os.getenv("QA_JEV_ABSTAIN_TAU", "0.93"))
+    )
+
     # Retrieval strategies that branch the evidence-assembly path. lexical/dense/hybrid
     # are the historical fused modes; graph_completion/graph_summary/chunk are explicit
     # retriever switches (see DomainExpertAgent._select_evidence).
@@ -243,6 +253,7 @@ class RetrievalConfig:
         "graph_completion",
         "graph_summary",
         "chunk",
+        "jev_cascade",
     }
 
     def __post_init__(self) -> None:

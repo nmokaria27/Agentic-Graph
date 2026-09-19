@@ -4,6 +4,7 @@ QA application layer on top of the governed knowledge graph.
 
 from __future__ import annotations
 
+import os
 import re
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
 
@@ -96,7 +97,18 @@ def _triple_text(triple: Any) -> str:
     return f"{triple.subject} {triple.relation} {triple.object}".replace("_", " ")
 
 
-def _format_triple(triple: Any) -> str:
+ABSTAIN_ANSWER = "No information available — this is not mentioned in the knowledge graph."
+
+
+def _fact_evidence_on() -> bool:
+    return os.getenv("QA_FACT_EVIDENCE") == "1"
+
+
+def _abstain_gate_on() -> bool:
+    return os.getenv("QA_ABSTAIN_GATE", "").lower() == "jev"
+
+
+def _format_triple(triple: Any, with_evidence: bool = False) -> str:
     base = f"({triple.subject}) -[{triple.relation}]-> ({triple.object})"
     # Surface the session date stamped at build time (Fix A) so temporal questions
     # can be answered from the fact itself instead of a disconnected DATE triple.
@@ -119,6 +131,12 @@ def _format_triple(triple: Any) -> str:
     # so the answer prompt's freshness rule can exclude it decisively.
     if meta.get("superseded_by") or meta.get("superseded_at"):
         base += " [SUPERSEDED by newer information — do not use as the answer]"
+    if with_evidence:
+        # The source sentence carries the detail the triple compresses away
+        # (EXP-JEV-1: without it gold-answer recall in rendered facts is near zero).
+        evidence = str(meta.get("evidence") or "").strip()
+        if evidence:
+            base += f' — "{evidence[:300]}"'
     return base
 
 
@@ -177,6 +195,27 @@ class DomainExpertAgent:
         focused_triples, subgraph_summary = self._select_evidence(
             query, candidates=domain_triples
         )
+        gate = getattr(self, "_last_gate", None)
+        if (
+            _abstain_gate_on()
+            and gate is not None
+            and gate["jev_max"] < self.retrieval_config.jev_abstain_tau
+            and getattr(self, "gate_exempt", False) is False
+        ):
+            # No fact is judged relevant enough: abstain without an LLM call.
+            return {
+                "answer": ABSTAIN_ANSWER,
+                "short_answer": "",
+                "coverage": 0.0,
+                "evidence": [],
+                "confidence": 0.0,
+                "out_of_scope_aspects": [query],
+                "abstained": True,
+                "gate": gate,
+                "domain_id": self.domain.domain_id,
+                "topics_used": [],
+                "multi_hop_paths": "none",
+            }
         subgraph_text = self._query_focused_domain_summary(query, focused=focused_triples)
         if subgraph_summary:
             subgraph_text += "\n\nSUMMARY OF RELEVANT SUBGRAPH:\n" + subgraph_summary
@@ -305,7 +344,7 @@ Return ONLY the JSON."""
             lines.append("Query-focused relationships:")
             for triple in focused:
                 conf = f" (conf={triple.confidence:.2f})" if triple.confidence else ""
-                lines.append(f"  {_format_triple(triple)}{conf}")
+                lines.append(f"  {_format_triple(triple, with_evidence=_fact_evidence_on())}{conf}")
         else:
             lines.append("No query-focused relationships found in this domain.")
             lines.append("Representative entities:")

@@ -319,9 +319,14 @@ class ActiveExplorerExpert(DomainExpertAgent):
         # LLM subgraph summary (item ④). graph_completion adds the focused triples.
         extra_evidence = ""
         mode = self.retrieval_config.retrieval_mode
-        if mode in {"chunk", "graph_summary", "graph_completion"}:
+        if mode in {"chunk", "graph_summary", "graph_completion", "jev_cascade"}:
             focused, summary = self._select_evidence(query)
-            if mode == "chunk" and focused:
+            if mode == "jev_cascade" and focused:
+                # Jev-selected facts replace the broad domain dump, with their source sentence.
+                subgraph_text = "RELEVANT FACTS:\n" + "\n".join(
+                    "  " + _format_triple(t, with_evidence=True) for t in focused
+                )
+            elif mode == "chunk" and focused:
                 subgraph_text = "RELEVANT TRIPLES:\n" + "\n".join(
                     "  " + _format_triple(t) for t in focused
                 )

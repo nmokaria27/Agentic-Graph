@@ -226,6 +226,77 @@ class GraphSummaryRetriever(HybridRetriever):
         return objects, summary
 
 
+_JEV_CLIENT: Any = None
+
+
+def _jev_client() -> Any:
+    global _JEV_CLIENT
+    if _JEV_CLIENT is None:
+        from multi_agent_kg.llm.typesafe_client import JevClient
+
+        _JEV_CLIENT = JevClient(max_questions_per_call=128)
+    return _JEV_CLIENT
+
+
+JEV_RELEVANCE_INSTRUCTION = (
+    "Is this fact from the knowledge graph useful evidence for answering the question? Fact: {fact}"
+)
+
+
+class JevCascadeRetriever(HybridRetriever):
+    """``jev_cascade``: wide cheap shortlist, then Jev picks the evidence.
+
+    The production pool's recall — not its ranking — was the bottleneck
+    (EXP-JEV-1/2), so the shortlist is wide (dense top-``jev_pool`` plus the top
+    lexical hits, which keep exact-match and date facts) and one Jev Noul per
+    fact selects the top ``jev_top_k``. The best per-fact probability is left on
+    ``agent._last_gate`` for the abstain gate. Any Jev failure falls back to
+    the hybrid path.
+    """
+
+    def retrieve_objects(
+        self, query: str, candidates: Optional[List[Any]] = None
+    ) -> List[Any]:
+        from multi_agent_kg.core.qa_orchestrator import _format_triple
+
+        agent, cfg = self.agent, self.agent.retrieval_config
+        agent._last_gate = None
+        pool_source = candidates if candidates is not None else agent.full_kg.get_active_triples()
+        pool = list(agent._vector_seed_triples(query, pool_source, top_k=cfg.jev_pool))
+        seen = {(t.subject, t.relation, t.object) for t in pool}
+        lexical = sorted(
+            ((agent._score_triple_for_query(t, query), i, t) for i, t in enumerate(pool_source)),
+            key=lambda item: (-item[0], item[1]),
+        )[: cfg.jev_lexical_k]
+        for score, _, triple in lexical:
+            key = (triple.subject, triple.relation, triple.object)
+            if score > 0 and key not in seen:
+                seen.add(key)
+                pool.append(triple)
+        if not pool:
+            return []
+        try:
+            answers = _jev_client().ask(
+                {"question": query},
+                {
+                    f"f{i}": {
+                        "type": "noul",
+                        "instructions": JEV_RELEVANCE_INSTRUCTION.format(
+                            fact=_format_triple(t, with_evidence=True)
+                        ),
+                    }
+                    for i, t in enumerate(pool)
+                },
+            )
+        except Exception as exc:
+            print(f"  WARNING: jev_cascade scoring failed ({exc}); falling back to hybrid retrieval")
+            return super().retrieve_objects(query, candidates)
+        probs = [float(answers[f"f{i}"]["p"]) for i in range(len(pool))]
+        order = sorted(range(len(pool)), key=lambda i: (-probs[i], i))[: cfg.jev_top_k]
+        agent._last_gate = {"jev_max": max(probs), "pool": len(pool)}
+        return [pool[i] for i in order]
+
+
 # Mode string -> retriever class.
 _RETRIEVERS = {
     "hybrid": HybridRetriever,
@@ -234,6 +305,7 @@ _RETRIEVERS = {
     "graph_completion": GraphCompletionRetriever,
     "graph_summary": GraphSummaryRetriever,
     "chunk": ChunkRetriever,
+    "jev_cascade": JevCascadeRetriever,
 }
 
 
@@ -247,6 +319,7 @@ def get_retriever(mode: str, agent: Any) -> BaseRetriever:
 
 
 __all__ = [
+    "JevCascadeRetriever",
     "BaseRetriever",
     "HybridRetriever",
     "ChunkRetriever",
