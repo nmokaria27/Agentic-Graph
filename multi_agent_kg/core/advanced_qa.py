@@ -79,7 +79,7 @@ from multi_agent_kg.core.domain_experts import (
     paths_to_text,
 )
 from multi_agent_kg.core.kg_operations import normalize_entity_name, normalize_for_matching
-from multi_agent_kg.core.qa_orchestrator import _format_triple
+from multi_agent_kg.core.qa_orchestrator import ABSTAIN_ANSWER, _abstain_gate_on, _format_triple
 from multi_agent_kg.llm.openai_client import chat_completion, chat_completion_json
 
 if TYPE_CHECKING:
@@ -321,6 +321,27 @@ class ActiveExplorerExpert(DomainExpertAgent):
         mode = self.retrieval_config.retrieval_mode
         if mode in {"chunk", "graph_summary", "graph_completion", "jev_cascade"}:
             focused, summary = self._select_evidence(query)
+            gate = getattr(self, "_last_gate", None)
+            if (
+                _abstain_gate_on()
+                and gate is not None
+                and gate["jev_max"] < self.retrieval_config.jev_abstain_tau
+            ):
+                # No fact judged relevant: abstain without any exploration LLM calls.
+                return {
+                    "domain_id": self.domain.domain_id,
+                    "answer": ABSTAIN_ANSWER,
+                    "coverage": 0.0,
+                    "confidence": 0.0,
+                    "evidence": [],
+                    "topics_used": [],
+                    "multi_hop_paths": "none",
+                    "exploration_trace": [],
+                    "entities_explored": [],
+                    "exploration_rounds": 0,
+                    "abstained": True,
+                    "gate": gate,
+                }
             if mode == "jev_cascade" and focused:
                 # Jev-selected facts replace the broad domain dump, with their source sentence.
                 subgraph_text = "RELEVANT FACTS:\n" + "\n".join(
