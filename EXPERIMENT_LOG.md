@@ -2132,4 +2132,23 @@ Offline probe of every knowledge-update miss against its own cached KG:
   multi-session ≥ base+1 (full fix needs the intent router, EXP-JEV-4);
   temporal, ss-user, ss-assistant, preference: no regression > 1 question.
   Gate: no correct answer lost to abstention.
-- STATUS: RUNNING.
+- **STATUS: PAUSED by owner (2026-09-19 ~14:40 EDT) — NO VERDICT YET.** All runs stopped; nothing deleted.
+  - Code shipped on `feat/jev-integration` (all opt-in): Jev via Vercel AI Gateway,
+    `RETRIEVAL_MODE=jev_cascade`, `QA_FACT_EVIDENCE`, `QA_INTENT_ROUTER=jev` (GB-16),
+    `QA_VALUE_COLLISION=jev` (GB-2d read side), `QA_ABSTAIN_GATE=jev` (expert + orchestrator level).
+  - Server: worktree `~/AGM-jev`, partial outputs in `evaluation/results/jev_lme2/`
+    (base: 39/48 answered; shared org-chart + vector caches built under `_shared/`).
+    Server is compute-only: LLM + embeddings + judge on Fireworks, Jev on the gateway.
+  - **The `cascade` answers in jev_lme2 are INVALID**: the Vercel gateway returned
+    `429 Free tier requests on this model are rate-limited` (84×), so retrieval fell
+    back to hybrid. Needs paid credits on Vercel (or `JEV_ROUTE=direct`) before rerun.
+  - Bug to fix before rerun: `lme_requery.py` crashes on multi-session records whose
+    gold `answer` is an int (`record['answer'][:50]`) → wrap in `str()`.
+  - Also seen: gpu02 GPUs held by a root-owned gemma-4-31B vLLM (untouched); gpu01
+    Ollama embeddings unresponsive (hence Fireworks embeddings).
+  - Local LoCoMo real-path check (conv-26, nemotron-30b): jev profile 0.249 non-adversarial,
+    adversarial 0.25 with expert-level gate only; orchestrator-level gate added after, rerun
+    interrupted by the pause. Valid hybrid baseline not yet obtained on this path.
+  - Resume: `ssh -o ControlPersist=8h -fN mind-jump`, fix the two items above, then on
+    gpu02 `cd ~/AGM-jev && git pull && nohup scripts/jev/lme_run_all.sh …` (uses `--resume`;
+    move/rename the invalid `*__cascade` dirs first rather than deleting).
