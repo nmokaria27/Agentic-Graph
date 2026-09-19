@@ -22,8 +22,13 @@ Answer dict shapes::
     {"type": "choice", "choice": "key", "confidence": 0.8, "probabilities": {...}}
     {"type": "score",  "score": 1.7, "confidence": 0.5, "probabilities": {"0": .., "1": ..}}
 
-Env: ``TYPESAFE_API_KEY`` (required for live calls), ``TYPESAFE_DEFAULT_MODEL``,
-``JEV_CACHE_DIR``, ``JEV_USAGE_LOG``.
+Credentials (first one set wins):
+
+- ``AI_GATEWAY_API_KEY`` / ``VERCEL_JEV_API_KEY`` → Vercel AI Gateway
+  (``https://ai-gateway.vercel.sh/typesafe``, model ``typesafe-ai/jev``)
+- ``TYPESAFE_API_KEY`` → TypeSafe directly (model ``jev-latest``)
+
+Other env: ``TYPESAFE_DEFAULT_MODEL``, ``JEV_CACHE_DIR``, ``JEV_USAGE_LOG``, ``JEV_MAX_INFLIGHT``.
 """
 
 from __future__ import annotations
@@ -39,6 +44,20 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 # Jev input price (USD per input token); output tokens are free.
 JEV_INPUT_PRICE_PER_TOKEN = 0.042 / 1_000_000
+
+GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh/typesafe"
+GATEWAY_MODEL = "typesafe-ai/jev"
+
+
+def resolve_jev_credentials() -> Tuple[Optional[str], Optional[str], str]:
+    """(api_key, base_url, default_model) — gateway keys take precedence."""
+    for name in ("AI_GATEWAY_API_KEY", "VERCEL_JEV_API_KEY"):
+        key = (os.getenv(name) or "").strip()
+        if key:
+            return key, GATEWAY_BASE_URL, GATEWAY_MODEL
+    key = (os.getenv("TYPESAFE_API_KEY") or "").strip()
+    return (key or None), None, "jev-latest"
+
 
 Questions = Mapping[str, Mapping[str, Any]]
 Answers = Dict[str, Dict[str, Any]]
@@ -96,11 +115,14 @@ class JevClient:
         usage_log: Optional[str] = None,
         max_questions_per_call: int = 32,
         max_workers: int = 8,
-        max_inflight: int = 4,
+        max_inflight: Optional[int] = None,
         max_retries: int = 6,
         sdk_client: Any = None,
     ) -> None:
-        self.model = model or os.getenv("TYPESAFE_DEFAULT_MODEL", "jev-latest")
+        self._api_key, self._base_url, default_model = resolve_jev_credentials()
+        self.model = model or os.getenv("TYPESAFE_DEFAULT_MODEL") or default_model
+        if max_inflight is None:
+            max_inflight = int(os.getenv("JEV_MAX_INFLIGHT", "16" if self._base_url else "4"))
         cache = cache_dir or os.getenv("JEV_CACHE_DIR")
         self.cache_dir = Path(cache) if cache else None
         if self.cache_dir:
@@ -120,7 +142,12 @@ class JevClient:
         if self._sdk is None:
             from typesafe_sdk import TypeSafeClient
 
-            self._sdk = TypeSafeClient(model=self.model, timeout=60.0)
+            kwargs: Dict[str, Any] = {"model": self.model, "timeout": 60.0}
+            if self._api_key:
+                kwargs["api_key"] = self._api_key
+            if self._base_url:
+                kwargs["base_url"] = self._base_url
+            self._sdk = TypeSafeClient(**kwargs)
         return self._sdk
 
     def _cache_get(self, key: str) -> Optional[Answers]:

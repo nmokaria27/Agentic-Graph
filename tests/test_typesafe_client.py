@@ -71,3 +71,15 @@ def test_ask_many_preserves_order_and_logs_usage(tmp_path):
     records = [json.loads(line) for line in log.read_text().splitlines()]
     assert len(records) == 6 and records[0]["input_tokens"] == 100
     assert client.cost_usd() == 600 * JEV_INPUT_PRICE_PER_TOKEN
+
+
+def test_gateway_key_takes_precedence_and_sets_base_url(monkeypatch):
+    from multi_agent_kg.llm import typesafe_client as tc
+
+    for name in ("AI_GATEWAY_API_KEY", "VERCEL_JEV_API_KEY", "TYPESAFE_API_KEY", "TYPESAFE_DEFAULT_MODEL"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("TYPESAFE_API_KEY", "direct")
+    assert tc.resolve_jev_credentials() == ("direct", None, "jev-latest")
+    monkeypatch.setenv("VERCEL_JEV_API_KEY", " gw ")
+    assert tc.resolve_jev_credentials() == ("gw", tc.GATEWAY_BASE_URL, tc.GATEWAY_MODEL)
+    assert JevClient(sdk_client=FakeSDK()).model == tc.GATEWAY_MODEL

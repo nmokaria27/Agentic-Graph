@@ -20,9 +20,16 @@ FW_EMBED = "accounts/fireworks/models/qwen3-embedding-8b"
 
 
 def main() -> None:
-    values = {k: (v or "").strip() for k, v in dotenv_values(".env").items()}
+    # Worktrees carry a stale .env copy; the main checkout's .env (if present) wins.
+    values: dict = {}
+    for env_file in (".env", os.getenv("AGM_ENV_FILE", "../Agent-Graph-Memory/.env")):
+        if os.path.exists(env_file):
+            values.update({k.strip(): (v or "").strip() for k, v in dotenv_values(env_file).items()})
     fw_key = values.get("FIREWORKS_API_KEY") or values.get("VLLM_API_KEY", "")
+    gateway_key = values.get("AI_GATEWAY_API_KEY") or values.get("VERCEL_JEV_API_KEY", "")
     jev_key = values.get("TYPESAFE_API_KEY") or values.get("Jev_API_KEY", "")
+    if os.getenv("JEV_ROUTE", "gateway") == "direct":  # bypass the Vercel gateway
+        gateway_key = ""
     env = dict(os.environ)
     env.update(
         {
@@ -34,7 +41,8 @@ def main() -> None:
             "EMBEDDING_BASE_URL": FW_BASE,
             "EMBEDDING_API_KEY": values.get("EMBEDDING_API_KEY") or fw_key,
             "EMBEDDING_MODEL": FW_EMBED,
-            "TYPESAFE_API_KEY": jev_key,
+            "TYPESAFE_API_KEY": "" if gateway_key else jev_key,
+            "AI_GATEWAY_API_KEY": gateway_key,
             "VLLM_MAX_MODEL_LEN": "131072",
             "PYTHONPATH": ".",
         }
