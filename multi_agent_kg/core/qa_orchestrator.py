@@ -200,7 +200,7 @@ class DomainExpertAgent:
             _abstain_gate_on()
             and gate is not None
             and gate["jev_max"] < self.retrieval_config.jev_abstain_tau
-            and getattr(self, "gate_exempt", False) is False
+            and not gate.get("exempt")
         ):
             # No fact is judged relevant enough: abstain without an LLM call.
             return {
@@ -216,6 +216,10 @@ class DomainExpertAgent:
                 "topics_used": [],
                 "multi_hop_paths": "none",
             }
+        if getattr(self, "_last_intent", None) == "aggregate":
+            from multi_agent_kg.core.query_intent import AGGREGATE_RIDER
+
+            context = (context + "\n\n" if context else "") + AGGREGATE_RIDER
         subgraph_text = self._query_focused_domain_summary(query, focused=focused_triples)
         if subgraph_summary:
             subgraph_text += "\n\nSUMMARY OF RELEVANT SUBGRAPH:\n" + subgraph_summary

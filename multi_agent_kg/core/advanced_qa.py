@@ -326,6 +326,7 @@ class ActiveExplorerExpert(DomainExpertAgent):
                 _abstain_gate_on()
                 and gate is not None
                 and gate["jev_max"] < self.retrieval_config.jev_abstain_tau
+                and not gate.get("exempt")
             ):
                 # No fact judged relevant: abstain without any exploration LLM calls.
                 return {
@@ -342,6 +343,10 @@ class ActiveExplorerExpert(DomainExpertAgent):
                     "abstained": True,
                     "gate": gate,
                 }
+            if getattr(self, "_last_intent", None) == "aggregate":
+                from multi_agent_kg.core.query_intent import AGGREGATE_RIDER
+
+                context = (context + "\n\n" if context else "") + AGGREGATE_RIDER
             if mode == "jev_cascade" and focused:
                 # Jev-selected facts replace the broad domain dump, with their source sentence.
                 subgraph_text = "RELEVANT FACTS:\n" + "\n".join(

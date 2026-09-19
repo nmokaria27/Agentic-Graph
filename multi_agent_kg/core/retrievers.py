@@ -238,6 +238,15 @@ def _jev_client() -> Any:
     return _JEV_CLIENT
 
 
+def _triple_date(triple: Any) -> str:
+    meta = getattr(triple, "metadata", None) or {}
+    if meta.get("session_date"):
+        return str(meta["session_date"])
+    refs = (meta.get("provenance") or {}).get("refs") or []
+    dates = [str(r.get("document_date")) for r in refs if isinstance(r, dict) and r.get("document_date")]
+    return max(dates) if dates else ""
+
+
 JEV_RELEVANCE_INSTRUCTION = (
     "Is this fact from the knowledge graph useful evidence for answering the question? Fact: {fact}"
 )
@@ -259,8 +268,11 @@ class JevCascadeRetriever(HybridRetriever):
     ) -> List[Any]:
         from multi_agent_kg.core.qa_orchestrator import _format_triple
 
+        from multi_agent_kg.core.query_intent import GATE_EXEMPT, classify_intent
+
         agent, cfg = self.agent, self.agent.retrieval_config
         agent._last_gate = None
+        agent._last_intent = None
         pool_source = candidates if candidates is not None else agent.full_kg.get_active_triples()
         pool = list(agent._vector_seed_triples(query, pool_source, top_k=cfg.jev_pool))
         seen = {(t.subject, t.relation, t.object) for t in pool}
@@ -292,9 +304,50 @@ class JevCascadeRetriever(HybridRetriever):
             print(f"  WARNING: jev_cascade scoring failed ({exc}); falling back to hybrid retrieval")
             return super().retrieve_objects(query, candidates)
         probs = [float(answers[f"f{i}"]["p"]) for i in range(len(pool))]
-        order = sorted(range(len(pool)), key=lambda i: (-probs[i], i))[: cfg.jev_top_k]
-        agent._last_gate = {"jev_max": max(probs), "pool": len(pool)}
-        return [pool[i] for i in order]
+        ranked = sorted(range(len(pool)), key=lambda i: (-probs[i], i))
+        intent = classify_intent(query, _jev_client())
+        if intent == "aggregate":
+            # Counting/summing needs EVERY matching fact, not the best few.
+            order = [i for i in ranked if probs[i] >= cfg.jev_aggregate_p][: cfg.jev_aggregate_cap]
+            if len(order) < cfg.jev_top_k:
+                order = ranked[: cfg.jev_top_k]
+        else:
+            order = ranked[: cfg.jev_top_k]
+        selected = [pool[i] for i in order]
+        if intent in ("temporal", "aggregate"):
+            selected.sort(key=_triple_date)  # stable: undated facts keep Jev order, first
+        selected = self._mark_stale_values(selected)
+        agent._last_intent = intent
+        agent._last_gate = {"jev_max": max(probs), "pool": len(pool), "intent": intent,
+                            "exempt": intent in GATE_EXEMPT}
+        return selected
+
+
+# (JevCascadeRetriever helper, kept out of retrieve_objects for readability)
+def _mark_stale_values(self: "JevCascadeRetriever", selected: List[Any]) -> List[Any]:
+    from multi_agent_kg.core.qa_orchestrator import _format_triple
+    from multi_agent_kg.core.value_collisions import mark_stale_values, value_collisions_on
+
+    if not value_collisions_on():
+        return selected
+    entities = self.agent.full_kg.entities
+
+    def object_text(triple: Any) -> str:
+        entity = entities.get(triple.object)
+        labels = " ".join(getattr(entity, "labels", None) or []) if entity else ""
+        return f"{labels} {str(triple.object).replace('_', ' ')}".strip()
+
+    try:
+        marked, decisions = mark_stale_values(
+            selected, object_text, lambda t: _format_triple(t, with_evidence=True), _jev_client())
+        self.agent._last_collisions = decisions
+        return marked
+    except Exception as exc:
+        print(f"  WARNING: value-collision check failed ({exc}); evidence left unmarked")
+        return selected
+
+
+JevCascadeRetriever._mark_stale_values = _mark_stale_values
 
 
 # Mode string -> retriever class.

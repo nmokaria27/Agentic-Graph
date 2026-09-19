@@ -75,3 +75,31 @@ def test_gate_is_off_by_default(monkeypatch):
     monkeypatch.setattr("multi_agent_kg.core.qa_orchestrator._chat_completion_json",
                         lambda *a, **k: {"answer": "x", "coverage": 0.1, "evidence": [], "confidence": 0.1})
     assert expert.answer("anything").get("abstained") is None
+
+
+class IntentJev(FakeJev):
+    def __init__(self, prob_for, intent):
+        super().__init__(prob_for)
+        self.intent = intent
+
+    def ask(self, state, questions):
+        if "intent" in questions:
+            return {"intent": {"type": "choice", "choice": self.intent, "confidence": 0.9, "probabilities": {}}}
+        return super().ask(state, questions)
+
+
+def test_aggregate_intent_keeps_all_relevant_facts_and_exempts_gate(monkeypatch):
+    monkeypatch.setenv("QA_INTENT_ROUTER", "jev")
+    monkeypatch.setattr(retrievers, "_JEV_CLIENT", IntentJev(lambda text: 0.6, "aggregate"))
+    expert = _expert()
+    expert.retrieval_config.jev_top_k = 1
+    triples, _ = expert._select_evidence("How many things do Caroline and Melanie like pottery support group?")
+    assert len(triples) == 2  # top_k=1 is lifted for aggregates
+    assert expert._last_gate["exempt"] is True and expert._last_intent == "aggregate"
+
+
+def test_router_off_means_point_intent(monkeypatch):
+    monkeypatch.delenv("QA_INTENT_ROUTER", raising=False)
+    from multi_agent_kg.core.query_intent import classify_intent
+
+    assert classify_intent("How many bikes do I own?", jev_client=None) == "point"

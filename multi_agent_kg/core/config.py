@@ -239,6 +239,8 @@ class RetrievalConfig:
     jev_pool: int = 200
     jev_lexical_k: int = 20
     jev_top_k: int = 15
+    jev_aggregate_p: float = 0.5  # aggregate intent: keep every fact at/above this relevance …
+    jev_aggregate_cap: int = 80  # … up to this many
     jev_abstain_tau: float = field(
         default_factory=lambda: float(os.getenv("QA_JEV_ABSTAIN_TAU", "0.93"))
     )

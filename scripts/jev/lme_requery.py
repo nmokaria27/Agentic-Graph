@@ -30,6 +30,9 @@ CONFIGS = {
     "base": {"RETRIEVAL_MODE": "hybrid"},
     "evidence": {"RETRIEVAL_MODE": "hybrid", "QA_FACT_EVIDENCE": "1"},
     "cascade": {"RETRIEVAL_MODE": "jev_cascade", "QA_FACT_EVIDENCE": "1"},
+    "cascade_router": {"RETRIEVAL_MODE": "jev_cascade", "QA_FACT_EVIDENCE": "1", "QA_INTENT_ROUTER": "jev"},
+    "cascade_full": {"RETRIEVAL_MODE": "jev_cascade", "QA_FACT_EVIDENCE": "1", "QA_INTENT_ROUTER": "jev",
+                     "QA_VALUE_COLLISION": "jev"},
     "cascade_gate": {"RETRIEVAL_MODE": "jev_cascade", "QA_FACT_EVIDENCE": "1", "QA_ABSTAIN_GATE": "jev"},
 }
 
