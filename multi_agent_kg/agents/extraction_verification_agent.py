@@ -160,6 +160,12 @@ class ExtractionVerificationAgent(BaseAgent):
         # Allow env-var override so accuracy mode can be toggled without code edits
         self.strict_source_only = strict_source_only or os.getenv("STRICT_VERIFICATION") == "1"
         self.cooccurrence_window = int(os.getenv("VERIFICATION_COOCCURRENCE_WINDOW", "300"))
+        # VERIFY_BACKEND=jev swaps the LARGE-tier LLM verifier for TypeSafe's Jev
+        # decision model (one fan-out call per document; EXP-JEV-1). Default: llm.
+        self.verify_backend = os.getenv("VERIFY_BACKEND", "llm").lower()
+        self.jev_verified_p = float(os.getenv("VERIFY_JEV_VERIFIED_P", "0.5"))
+        self.jev_partial_p = float(os.getenv("VERIFY_JEV_PARTIAL_P", "0.3"))
+        self._jev_client = None
 
     def run(
         self,
@@ -209,6 +215,8 @@ class ExtractionVerificationAgent(BaseAgent):
         # Step 1b: Verify against source text
         if self.strict_source_only:
             verification_result = self._verify_by_existing_source_links(context.text, triples)
+        elif self.verify_backend == "jev":
+            verification_result = self._verify_with_jev(context.text, triples)
         else:
             verification_result = self._verify_against_source(
                 context.text,
@@ -472,6 +480,72 @@ class ExtractionVerificationAgent(BaseAgent):
                 summary_totals[key] += batch_summary.get(key, 0)
 
         return {"verified_triples": all_verified, "verification_summary": summary_totals}
+
+    def _verify_with_jev(
+        self,
+        text: str,
+        triples: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Verify triples with Jev: one Noul (P(supported)) per triple, all in one call.
+
+        Jev bills the source text once per call and ~20 tokens per extra question,
+        so the whole document's triples fan out in a single request. Falls back to
+        the LLM verifier if Jev is unavailable.
+        """
+        if not triples:
+            return {"verified_triples": [], "verification_summary": {}}
+        try:
+            if self._jev_client is None:
+                from multi_agent_kg.llm.typesafe_client import JevClient
+
+                self._jev_client = JevClient(max_questions_per_call=128)
+            questions = {}
+            for index, triple in enumerate(triples):
+                relation = str(triple.get("relation", "")).replace("_", " ").replace("-", " ").lower()
+                questions[f"t{index}"] = {
+                    "type": "noul",
+                    "instructions": (
+                        "Does the source text explicitly state or directly imply this fact: "
+                        f"'{triple.get('subject', '')}' {relation} '{triple.get('object', '')}'? "
+                        "Answer no if either phrase is generic, a pronoun, or not a real entity."
+                    ),
+                }
+            answers = self._jev_client.ask({"source_text": text[:6000]}, questions)
+        except Exception as exc:
+            print(f"      WARNING: Jev verification failed ({exc}); falling back to LLM verifier")
+            return self._verify_against_source(text, triples)
+
+        verified: List[Dict[str, Any]] = []
+        summary = {"total": len(triples), "verified": 0, "partial": 0, "rejected": 0, "hallucinated": 0}
+        for index, triple in enumerate(triples):
+            p_supported = float(answers[f"t{index}"]["p"])
+            if p_supported >= self.jev_verified_p:
+                status = "verified"
+            elif p_supported >= self.jev_partial_p:
+                status = "partial"
+            else:
+                status = "rejected"
+            summary[status] += 1
+            verified.append(
+                {
+                    "triple": {
+                        "subject": triple.get("subject", ""),
+                        "relation": triple.get("relation", ""),
+                        "object": triple.get("object", ""),
+                    },
+                    "verified": status == "verified",
+                    "verification_status": status,
+                    # Supported triples keep at least their extraction confidence.
+                    "final_confidence": (
+                        max(p_supported, float(triple.get("confidence") or 0.0))
+                        if status == "verified" else p_supported
+                    ),
+                    "supporting_evidence": "",
+                    "rejection_reason": "" if status != "rejected" else f"Jev P(supported)={p_supported:.2f}",
+                    "verification_reasoning": f"Jev P(supported)={p_supported:.2f}",
+                }
+            )
+        return {"verified_triples": verified, "verification_summary": summary}
 
     def _cooccurrence_filter(
         self,

@@ -518,6 +518,11 @@ def chat_completion(
         params["response_format"] = kwargs["response_format"]
     if LLM_BACKEND == "openai":
         params.update(kwargs)
+    # Opt-in reasoning control for hosted thinking models (e.g. Fireworks
+    # nemotron: "none" cuts output tokens ~20x). Unset = provider default.
+    _effort = os.getenv("LLM_REASONING_EFFORT")
+    if _effort and "reasoning_effort" not in params:
+        params["reasoning_effort"] = _effort
 
     active_client = _client_for_model(resolved_model)
     last_error = None

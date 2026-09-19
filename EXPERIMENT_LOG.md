@@ -2067,3 +2067,50 @@ Offline probe of every knowledge-update miss against its own cached KG:
   same slot updated / duplicate") on same-subject pairs, with ordering done
   in code by provenance date (Jev is weak on dates); (5) T1b as recall-booster
   candidates for the LLM extractor (union + Jev gate).
+
+## EXP-JEV-2: Jev verify backend wired in, cheap 30B model, retrieval cascade + abstain gate  (2026-09-19)
+- **Changes (branch `feat/jev-integration`, all opt-in, defaults unchanged):**
+  - `VERIFY_BACKEND=jev` in `extraction_verification_agent` — one Jev call per
+    document (a Noul per triple), LLM verifier as fallback on Jev failure.
+  - `LLM_REASONING_EFFORT` env in `openai_client` (unset = no change).
+  - `multi_agent_kg/llm/rerank_client.py` (Fireworks qwen3-reranker-8b,
+    chunked + parallel + cached). `scripts/jev/t3_locomo_retrieval.py`.
+- **Cost finding:** on gpt-oss-120b builds, output ≈ input tokens and ~62% of
+  output is reasoning; prompt-cache hits only 6–11%. nemotron-lightning-30b
+  with default thinking emitted ~10k output tok/call (doc 2/10 after 25 min).
+  With `LLM_REASONING_EFFORT=none`: 10-doc governed build in **3.7–5.1 min**
+  (was ~20 min on gpt-oss-120b), ~93–128k output tok (was ~235–270k).
+  Fireworks Batch API = 50% off + 50% off cached tokens, but 12–72 h windows
+  and staged (entity → relation → verify) jobs — suited to bulk ingestion, not
+  wired yet.
+- **T1 (SciERC test 10 docs, nemotron-30b, reasoning none, fixed schema):**
+  | verify backend | ent F1 | strict P | strict R | strict F1 | mapped F1 | wall | LLM calls |
+  |---|---|---|---|---|---|---|---|
+  | LLM (stage 8) | 0.557 | 0.054 | 0.068 | 0.060 | 0.191 | 306 s | 147 |
+  | **Jev** | 0.568 | **0.131** | **0.148** | **0.139** | **0.235** | **222 s** | 120 |
+  Jev verify cost for the whole build: 10 calls, 10.7k tok, **$0.00045**, 4.8 s.
+  Caveat: separate builds (temp 0.2), n=10, single run each. Note EXP-JEV-1's
+  no-LLM Jev extractor (strict F1 0.217) beats both 30B arms.
+- **T3 (LoCoMo, nemotron-30b reasoning none, k=15, facts + source sentence;
+  gates tuned on conv-30, frozen, tested on conv-26, 40 Qs):**
+  | arm | overall | non-adv | multi-hop | single-hop | adversarial |
+  |---|---|---|---|---|---|
+  | B0 production retriever | 0.346 | 0.214 | 0.077 | 0.353 | 0.875 |
+  | R1 reranker over whole KG | 0.375 | 0.375 | 0.271 | 0.553 | 0.375 |
+  | R2 reranker top-60 → Jev | 0.356 | 0.351 | 0.271 | 0.536 | 0.375 |
+  | D embeddings top-200 → Jev | 0.324 | 0.373 | 0.438 | 0.488 | 0.125 |
+  | **D + gate (max Jev relevance < 0.93 → abstain)** | **0.444** | 0.304 | 0.396 | 0.488 | **1.000** |
+  | R2 + gate | 0.390 | 0.237 | 0.188 | 0.429 | 1.000 |
+  Gate fixes adversarial (→1.0) at a cost on open-domain (0.44→0.21: inferential
+  answers have no direct evidence). The Jev answer-verification gate was never
+  selected by tuning. Reranker full scan used ~4.4M tok / 40 Qs — NOT cheap;
+  D needs no reranker and costs ≈$0.0005/question of Jev. Temporal is noise on
+  these KGs (they predate session-date stamping; dates aren't on facts).
+  Non-thinking answerer barely abstains by itself (adv 0.25 on conv-30 for all
+  arms), so a gate is required with cheap answerers.
+- **Verdict:** ACCEPT `VERIFY_BACKEND=jev` (opt-in; recommend default for
+  small extractors). ACCEPT D+gate as the retrieval candidate to wire next.
+  REJECT reranker full-scan on cost. All n=10 / n=40, directional.
+- **Next:** wire D+gate behind `RETRIEVAL_MODE=jev_cascade`; rebuild LoCoMo KGs
+  with session dates then re-test temporal; exempt open-domain/inferential
+  questions from the gate via a Jev intent Choice; batch-API ingestion mode.
