@@ -2010,3 +2010,60 @@ Offline probe of every knowledge-update miss against its own cached KG:
 - **Action:** GB-2d PROMOTED to NEXT with a concrete, evidence-grounded design
   input (this idx=3 case is the reference example). GB-16 (intent-based
   retrieval for aggregation questions) still queued behind it for multi-session.
+
+## EXP-JEV-1: where does Jev (TypeSafe System One) pay off?  (2026-09-19)
+- **Context:** Jev answers typed questions only — Choice (≤255 options),
+  Score (rubric level), Noul (P(yes)); NO text generation. 70–500 ms, $0.042/MTok
+  input, output free. Measured here: state billed once per call, each extra
+  question ~19 tok; 128 questions/call returned in 0.29 s. So it can pick,
+  type, verify, rank and route; it cannot write entities, triples or answers.
+- **Setup (branch `feat/jev-integration`, Mac + Fireworks):** new
+  `multi_agent_kg/llm/typesafe_client.py` (JevClient: disk cache, 128-question
+  fan-out, in-flight cap + 429/529 backoff, usage JSONL) +
+  `scripts/jev/{fw_exec,t1_scierc_jev,t2_locomo_rerank}.py`. No production
+  code path changed.
+- **T1a — Jev replaces the LLM verification stage (SciERC test, 10 docs,
+  gpt-oss-120b FW, fixed schema, paper scorer):**
+  | | ent F1 | strict P | strict R | strict F1 | mapped F1 | verify cost |
+  |---|---|---|---|---|---|---|
+  | no verification | 0.603 | 0.239 | 0.386 | 0.296 | 0.426 | — |
+  | LLM verification (stage 8) | 0.585 | **0.269** | 0.364 | **0.309** | **0.435** | +13 LLM calls, ~30k in / ~36k out tok |
+  | Jev gate τ=0.5 + entity gate | **0.619** | 0.256 | **0.386** | 0.308 | 0.434 | 10 calls, 40k tok, **$0.0017, 1.4 s** |
+  The unverified build reproduces EXP-HEADROOM-SCIERC (0.296 vs 0.299). All
+  τ ∈ {0.1..0.7} give strict F1 0.297–0.308, so the result does not hinge on
+  τ. Caveat: the LLM-verify arm is a separate build (temp 0.2), n=10.
+- **T1b — no-LLM extraction (n-gram spans → Jev Choice type; same-sentence
+  pairs → Jev Choice over directional relations):** thresholds tuned on 10 DEV
+  docs (entity p_none<0.05, relation p_none<0.02), frozen, applied to test:
+  ent F1 0.525, strict P 0.153 / R 0.375 / F1 **0.217**, mapped 0.257.
+  $0.06 and ~17 s for 10 docs, vs ~20 min for the gpt-oss governed build.
+  Beats the Qwen3-30B multi-agent pipeline (strict F1 0.116), trails
+  gpt-oss-120b (0.299). Span generator ceiling: 92.5% gold-entity recall.
+- **T2 — retrieval (LoCoMo conv-26 cached KG, 40 Qs = 8/category, same
+  gpt-oss-120b answerer + prompt in all arms, facts rendered with their source
+  sentence):**
+  | arm | overall | non-adversarial | multi-hop | temporal | single-hop | adversarial |
+  |---|---|---|---|---|---|---|
+  | B0 production retriever top-15 | 0.365 | 0.206 | 0.075 | 0.090 | 0.319 | 1.00 |
+  | B1 Jev rerank of retriever top-60 | 0.294 | 0.118 | 0.087 | 0.000 | 0.093 | 1.00 |
+  | B3 Jev scores ALL 924 triples, top-15 | **0.400** | **0.313** | **0.438** | **0.156** | 0.324 | 0.75 |
+  Gold-token recall in evidence: whole KG 0.50–0.89, retriever top-60 pool
+  0.14–0.76. **The retriever pool is the bottleneck, so reranking it can't
+  help.** A Jev full scan costs ~$0.002/question and ~0.8 s/question. The
+  abstain gate (B2) never fired at p<0.1. The adversarial drop comes from the
+  answerer abstaining less once evidence looks relevant. Also found:
+  `_format_triple` drops the evidence sentence; without it, gold recall in
+  rendered facts falls to 0–28% (all arms scored near floor).
+- **Verdict:**
+  - ACCEPT Jev as a verification backend: same F1, far cheaper and faster.
+  - PROMISING: Jev as a full-scan / first-stage retriever for small-to-mid
+    KGs, and as a cheap high-recall extractor.
+  - REJECT: Jev reranking of the existing pool.
+  - All results are n=10 / n=40, so treat them as directional.
+- **Next:** (1) wire `VERIFY_BACKEND=jev` into
+  `extraction_verification_agent`; (2) fix `_format_triple` to carry the
+  evidence sentence; (3) re-test B3 with an adversarial-safe gate, on more
+  LoCoMo convs + LongMemEval KU; (4) GB-2d: a Jev Score ("different fact /
+  same slot updated / duplicate") on same-subject pairs, with ordering done
+  in code by provenance date (Jev is weak on dates); (5) T1b as recall-booster
+  candidates for the LLM extractor (union + Jev gate).
