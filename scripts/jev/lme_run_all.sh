@@ -9,6 +9,9 @@ M=${LME_MODEL:-accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b}
 JUDGE=${LME_JUDGE:-accounts/fireworks/models/gpt-oss-120b}
 PY=${PY:-$HOME/miniconda3/envs/agm/bin/python}
 OUT=evaluation/results/jev_lme2; mkdir -p "$OUT"
+# gpu01's Ollama embedding server was unresponsive (2026-09-19): embed through Fireworks instead.
+export EMBEDDING_BASE_URL=https://api.fireworks.ai/inference/v1 EMBEDDING_API_KEY=$FIREWORKS_API_KEY \
+       EMBEDDING_MODEL=accounts/fireworks/models/qwen3-embedding-8b
 export PYTHONPATH=. LLM_REASONING_EFFORT=none LLM_DEFAULT_MODEL=$M JEV_CACHE_DIR=$OUT/jev_cache
 ABILITIES="knowledge-update multi-session temporal-reasoning single-session-user single-session-assistant single-session-preference"
 CONFIGS=${LME_CONFIGS:-"cascade cascade_router cascade_full cascade_gate"}
