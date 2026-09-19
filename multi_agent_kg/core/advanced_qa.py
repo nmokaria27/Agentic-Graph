@@ -1417,6 +1417,10 @@ class AdvancedQAOrchestrator:
             else:
                 step_answers.append("")
 
+        gated = QAOrchestrator._abstain_if_all_gated(self, question, sub_questions, domain_responses)
+        if gated is not None:
+            return gated
+
         fallback_context = QAOrchestrator._build_global_fallback_context(
             self, question, domain_responses, called_domains,
         )

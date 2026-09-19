@@ -934,6 +934,10 @@ class QAOrchestrator:
                     f"confidence={response.get('confidence', 0):.2f}"
                 )
 
+        gated = self._abstain_if_all_gated(question, sub_questions, domain_responses)
+        if gated is not None:
+            return gated
+
         fallback_context = self._build_global_fallback_context(question, domain_responses, called_domains)
         if fallback_context:
             print("\n  → Triggering global fallback")
@@ -978,6 +982,39 @@ class QAOrchestrator:
             print(f"  Knowledge gaps: {result['gaps']}")
         print(f"{'='*70}\n")
         return result
+
+    def _abstain_if_all_gated(
+        self, question: str, sub_questions: List[Any], domain_responses: List[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """Abstain gate, orchestrator half (QA_ABSTAIN_GATE=jev).
+
+        When every routed expert abstained, re-check relevance over the WHOLE graph
+        (routing may have picked the wrong domain). Only if that is also below the
+        threshold do we return the canonical abstention — skipping the fallback
+        expert and synthesis calls that would otherwise answer anyway.
+        """
+        if not _abstain_gate_on() or not domain_responses:
+            return None
+        if not all(response.get("abstained") for response in domain_responses):
+            return None
+        expert = self.global_fallback_expert
+        expert._select_evidence(question)
+        gate = getattr(expert, "_last_gate", None)
+        if gate is None or gate.get("exempt") or gate["jev_max"] >= self.retrieval_config.jev_abstain_tau:
+            return None
+        print(f"  → Abstaining: best fact relevance {gate['jev_max']:.2f} < {self.retrieval_config.jev_abstain_tau}")
+        return {
+            "question": question,
+            "final_answer": ABSTAIN_ANSWER,
+            "final_answer_short": "",
+            "sub_questions": sub_questions,
+            "domain_responses": domain_responses,
+            "overall_coverage": 0.0,
+            "overall_confidence": 0.0,
+            "gaps": [question],
+            "abstained": True,
+            "gate": gate,
+        }
 
     def _extract_query_entities(self, text: str) -> List[str]:
         probe_expert = getattr(self, "global_fallback_expert", None)
